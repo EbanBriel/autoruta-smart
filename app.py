@@ -9,7 +9,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# Apuntando al nuevo archivo actualizado
 EXCEL_PATH = "LISTA DE FILTROS PARA WEB APP.xlsx"
 DB_NAME = "autoruta_maestra.db"
 
@@ -67,69 +66,111 @@ def asegurar_y_cargar_base_datos():
         for sheet in xls.sheet_names:
             if "RESUMEN" in sheet.upper():
                 continue
-            df = pd.read_excel(xls, sheet_name=sheet)
-            for idx, row in df.iterrows():
-                row_vals = [str(v).strip() for v in row.values if pd.notna(v)]
-                if len(row_vals) < 3:
-                    continue
-                
+            
+            # Leer el Excel buscando la cabecera correcta (fila 7, que corresponde a header=7)
+            try:
+                df = pd.read_excel(xls, sheet_name=sheet, header=7)
+            except:
+                df = pd.read_excel(xls, sheet_name=sheet)
+
+            # Normalizar nombres de columnas para que coincidan sin importar mayúsculas/espacios
+            df.columns = [str(c).strip().upper() for c in df.columns]
+
+            for _, row in df.iterrows():
+                # Obtener valores clave por nombre de columna exacto si existe
                 codigo_principal = None
-                marca = sheet[:20]
+                for col_candidata in ['PN GLI', 'CODIGO', 'CÓDIGO', 'ITEM', 'PARTE']:
+                    if col_candidata in df.columns and pd.notna(row[col_candidata]):
+                        codigo_principal = str(row[col_candidata]).strip()
+                        break
+                
+                # Si no encuentra columna por nombre estricto, toma el primer valor válido que parezca código
+                if not codigo_principal:
+                    for v in row.values:
+                        if pd.notna(v) and len(str(v).strip()) < 20 and str(v).strip() != '-':
+                            codigo_principal = str(v).strip()
+                            break
+                
+                if not codigo_principal or codigo_principal.lower() == 'nan':
+                    continue
+
+                marca = sheet[:25]
+                
+                # Extraer Categoría / Tipo de filtro
                 categoria = "Filtro"
-                pvp = 0.0
-                stock = "Disponible"
+                for col_candidata in ['TIPO DE FILTRO', 'CATEGORIA', 'TIPO']:
+                    if col_candidata in df.columns and pd.notna(row[col_candidata]):
+                        categoria = str(row[col_candidata]).strip()
+                        break
+
+                # Extraer Aplicación de forma directa desde la columna
                 aplicacion = "No especificada"
+                for col_candidata in ['APLICACIONES', 'APLICACION', 'APLICACIONES / COMENTARIOS', 'COMENTARIOS']:
+                    if col_candidata in df.columns and pd.notna(row[col_candidata]):
+                        val_app = str(row[col_candidata]).strip()
+                        if val_app and val_app != '-' and val_app.lower() != 'nan':
+                            aplicacion = val_app
+                            break
+
+                # Extraer Precio (PVP)
+                pvp = 0.0
+                for col_candidata in ['PRECIO CON DESCUENTO INCLUIDO', 'PVP', 'PRECIO', 'VALOR']:
+                    if col_candidata in df.columns and pd.notna(row[col_candidata]):
+                        pvp = limpiar_precio(row[col_candidata])
+                        if pvp > 0:
+                            break
+                if pvp == 0.0:
+                    # Buscar cualquier número candidato en la fila si la columna exacta no trajo precio
+                    for v in row.values:
+                        pc = limpiar_precio(v)
+                        if pc > 500:
+                            pvp = pc
+
+                # Extraer Stock
+                stock = "Disponible"
+                for col_candidata in ['STOCK', 'ESTADO']:
+                    if col_candidata in df.columns and pd.notna(row[col_candidata]):
+                        val_st = str(row[col_candidata]).strip()
+                        if val_st and val_st.lower() != 'nan':
+                            stock = val_st
+                            break
+
+                # Extraer Equivalencias (Marcas Tecfil, Mann, etc.)
                 equivalentes = []
-                precios_encontrados = []
+                for col_name in df.columns:
+                    if any(k in col_name for k in ['TECFIL', 'MANN', 'BALDWIN', 'DONALDSON', 'FLEETGUARD', 'WEGA', 'HIGHfil', 'EQUIVALENCIA', 'CRUCE']):
+                        val_eq = row[col_name]
+                        if pd.notna(val_eq):
+                            eq_str = str(val_eq).strip()
+                            if eq_str and eq_str != '-' and eq_str.lower() != 'nan' and eq_str != codigo_principal:
+                                equivalentes.append(eq_str)
 
-                for val in row.values:
-                    if pd.isna(val):
-                        continue
-                    v_str = str(val).strip()
-                    if not v_str or v_str == '-' or v_str.lower() == 'nan':
-                        continue
-                    
-                    precio_candidato = limpiar_precio(val)
-                    if precio_candidato > 500:
-                        precios_encontrados.append(precio_candidato)
-                        continue
-                    
-                    if v_str.lower() in ['disponible', 'agotado', 'confirmar disponibilidad/precio']:
-                        stock = v_str
-                        continue
-                    
-                    if len(v_str) > 10 and any(k in v_str.upper() for k in ['VOLVO', 'SCANIA', 'TOYOTA', 'FORD', 'CHEVROLET', 'HYUNDAI', 'MITSUBISHI', 'REEMPLAZA', 'N°', 'MOTOR', 'CAMINHÕES']):
-                        aplicacion = v_str
-                        continue
-                    
-                    if len(v_str) < 20 and not any(k in v_str.upper() for k in ['FILTRO', 'ACEITE', 'AIRE', 'DISPONIBLE']):
-                        if not codigo_principal:
-                            codigo_principal = v_str
-                        else:
-                            equivalentes.append(v_str)
+                # Insertar repuesto principal
+                cursor.execute("""
+                    INSERT OR IGNORE INTO repuestos (codigo, marca_fabricante, categoria, pvp, stock, aplicacion)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (codigo_principal, marca, categoria, pvp, stock, aplicacion))
+                
+                # Actualizar si ya existía para refrescar datos nuevos
+                cursor.execute("""
+                    UPDATE repuestos SET pvp = ?, stock = ?, aplicacion = ? WHERE codigo = ?
+                """, (pvp, stock, aplicacion, codigo_principal))
 
-                if precios_encontrados:
-                    pvp = precios_encontrados[-1]
-
-                if codigo_principal:
-                    cursor.execute("""
-                        INSERT OR IGNORE INTO repuestos (codigo, marca_fabricante, categoria, pvp, stock, aplicacion)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    """, (codigo_principal, marca, categoria, pvp, stock, aplicacion))
-                    
-                    cursor.execute("SELECT id_repuesto FROM repuestos WHERE codigo = ?", (codigo_principal,))
-                    res_orig = cursor.fetchone()
-                    
-                    if res_orig:
-                        id_orig = res_orig[0]
-                        for eq_cod in equivalentes:
-                            if eq_cod != codigo_principal and len(eq_cod) < 20:
+                cursor.execute("SELECT id_repuesto FROM repuestos WHERE codigo = ?", (codigo_principal,))
+                res_orig = cursor.fetchone()
+                
+                if res_orig:
+                    id_orig = res_orig[0]
+                    for eq_cod in equivalentes:
+                        for sub_eq in eq_cod.replace('/', ' ').split():
+                            sub_eq = sub_eq.strip()
+                            if len(sub_eq) > 1 and sub_eq != codigo_principal:
                                 cursor.execute("""
                                     INSERT OR IGNORE INTO repuestos (codigo, marca_fabricante, categoria, pvp, stock, aplicacion)
                                     VALUES (?, ?, ?, ?, ?, ?)
-                                """, (eq_cod, 'Equivalente', categoria, pvp, stock, aplicacion))
+                                """, (sub_eq, 'Equivalente', categoria, pvp, stock, aplicacion))
                                 
-                                cursor.execute("SELECT id_repuesto FROM repuestos WHERE codigo = ?", (eq_cod,))
+                                cursor.execute("SELECT id_repuesto FROM repuestos WHERE codigo = ?", (sub_eq,))
                                 res_dest = cursor.fetchone()
                                 if res_dest:
                                     cursor.execute("""
