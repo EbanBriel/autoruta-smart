@@ -9,7 +9,8 @@ st.set_page_config(
     layout="wide"
 )
 
-EXCEL_PATH = "Lista de Precios Filtros - Julio2026 (1).xlsx"
+# Apuntando al nuevo archivo actualizado
+EXCEL_PATH = "LISTA DE FILTROS PARA WEB APP.xlsx"
 DB_NAME = "autoruta_maestra.db"
 
 def limpiar_precio(val):
@@ -41,7 +42,6 @@ def asegurar_y_cargar_base_datos():
     cursor = conn.cursor()
     cursor.execute("PRAGMA foreign_keys = ON;")
 
-    # Garantizar que las tablas SIEMPRE se crean al iniciar
     cursor.executescript("""
     CREATE TABLE IF NOT EXISTS repuestos (
         id_repuesto INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,7 +61,6 @@ def asegurar_y_cargar_base_datos():
     """)
     conn.commit()
 
-    # Si la tabla está vacía y el Excel existe, procesar la carga
     total = cursor.execute("SELECT COUNT(*) FROM repuestos").fetchone()[0]
     if total == 0 and os.path.exists(EXCEL_PATH):
         xls = pd.ExcelFile(EXCEL_PATH)
@@ -99,7 +98,7 @@ def asegurar_y_cargar_base_datos():
                         stock = v_str
                         continue
                     
-                    if len(v_str) > 10 and any(k in v_str.upper() for k in ['VOLVO', 'SCANIA', 'TOYOTA', 'FORD', 'CHEVROLET', 'HYUNDAI', 'MITSUBISHI', 'REEMPLAZA', 'N°', 'MOTOR']):
+                    if len(v_str) > 10 and any(k in v_str.upper() for k in ['VOLVO', 'SCANIA', 'TOYOTA', 'FORD', 'CHEVROLET', 'HYUNDAI', 'MITSUBISHI', 'REEMPLAZA', 'N°', 'MOTOR', 'CAMINHÕES']):
                         aplicacion = v_str
                         continue
                     
@@ -140,7 +139,6 @@ def asegurar_y_cargar_base_datos():
         conn.commit()
     conn.close()
 
-# Asegurar base de datos antes de renderizar la interfaz
 asegurar_y_cargar_base_datos()
 
 st.title("🚗 AutoRuta Smart — Catálogo en Terreno")
